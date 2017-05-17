@@ -34,10 +34,35 @@ limitations under the License.
 #include "tensorflow/core/platform/thread_annotations.h"
 
 namespace Eigen {
-class ThreadPoolDevice;
+struct ThreadPoolDevice;
 }
 
 namespace xla {
+
+// Options to configure the backend when it is created.
+class BackendOptions {
+ public:
+  // Set the platform backing the backend, or nullptr for the default platform.
+  BackendOptions& set_platform(perftools::gputools::Platform* platform);
+  perftools::gputools::Platform* platform() const;
+
+  // Set the number of replicas to use when compiling replicated
+  // programs. The default is -1 meaning that the value is read from
+  // the xla_replicas flag.
+  BackendOptions& set_number_of_replicas(int number_of_replicas);
+  int number_of_replicas() const;
+
+  // Sets the thread pool size for parallel execution of an individual operator.
+  // The default value of -1 will result in initializing the thread pool with
+  // the number of threads equal to the number of cores in the system.
+  BackendOptions& set_intra_op_parallelism_threads(int num_threads);
+  int intra_op_parallelism_threads() const;
+
+ private:
+  perftools::gputools::Platform* platform_ = nullptr;
+  int number_of_replicas_ = -1;
+  int intra_op_parallelism_threads_ = -1;
+};
 
 // Class which encapsulates an XLA backend. It includes everything necessary
 // to compile and execute computations on a particular platform.
@@ -53,9 +78,9 @@ class Backend {
   static constexpr int kInitialStreamsToPool = 8;
 
   // Creates a new backend for the given platform with the given number of
-  // replicas. A value of -1 means to use the flag value.
+  // replicas.
   static StatusOr<std::unique_ptr<Backend>> CreateBackend(
-      perftools::gputools::Platform* platform, int64 replica_count = -1);
+      const BackendOptions& options);
 
   // Creates a backend for the default platform. The default platform is defined
   // in PlatformUtil.
@@ -116,8 +141,16 @@ class Backend {
   // Borrows a stream for use by the caller, either by grabbing it from an
   // internal pool, or by constructing/initializating it, and returns the result
   // to the caller.
+  StatusOr<StreamPtr> BorrowStream(int device_ordinal);
   StatusOr<StreamPtr> BorrowStream(
       perftools::gputools::StreamExecutor* executor);
+
+  // Returns a function to borrow a stream, as `BorrowStream` above does.
+  // Purely for convenience, the caller could rather make this anonymous
+  // function itself.
+  std::function<StatusOr<StreamPtr>(int)> StreamBorrower() {
+    return [this](int device_ordinal) { return BorrowStream(device_ordinal); };
+  }
 
   // Returns whether the given device ordinal of the backend is supported.
   bool device_ordinal_supported(int device_ordinal) const {
@@ -142,6 +175,7 @@ class Backend {
   // For the host platform, returns the configured eigen threadpool device to be
   // used for scheduling work. For other platforms, returns NULL.
   const Eigen::ThreadPoolDevice* eigen_intra_op_thread_pool_device() const;
+  tensorflow::thread::ThreadPool* eigen_intra_op_thread_pool() const;
 
   // Resets the devices associated with this backend.
   Status ResetDevices();
@@ -152,7 +186,7 @@ class Backend {
           Compiler* compiler,
           tensorflow::gtl::ArraySlice<perftools::gputools::StreamExecutor*>
               stream_executors,
-          TransferManager* transfer_manager);
+          TransferManager* transfer_manager, int intra_op_parallelism_threads);
   Backend(const Backend&) = delete;
   Backend& operator=(const Backend&) = delete;
 
